@@ -3,7 +3,7 @@ This is a proposal to introduce intrinsic support for ARM64 SVE (Scalable Vector
 
 SVE is a recent architecture extension introduced to the ARM64 architecture. Its defining feature is a Vector Length Agnostic (VLA) programming model, which allows developers to write SIMD code once and have it scale automatically to the hardware's available vector length, much like standard scalar code. This proposal aims to provide a clean, accessible API that feels idiomatic to Go, mirrors the existing AMD64 `archsimd` API, and integrates smoothly with [Midway](https://github.com/golang/go/issues/78902).
 
-This proposal only covers SVE and some SVE2. Specifically, loads from and stores to register lists are not supported. Each type supported will map to one `Z` or `P` register and we assume their length to be at most 256 bits and 64 bits. SVE2.1 and SME are not within the scope of this proposal.
+This proposal only covers SVE and some SVE2. Specifically, loads from and stores to register lists are not supported. Each type supported will map to one `Z` or `P` register and we assume their length to be at most 256 bits and 64 bits. As a result, `PN` registers are also not supported. SVE2.1 and SME are not within the scope of this proposal.
 
 ## API Overview
 
@@ -11,67 +11,19 @@ This proposal only covers SVE and some SVE2. Specifically, loads from and stores
 Scalable vector types will be represented as `ElementType + "s"`. 
 For example, a scalable vector of `int8` elements is typed as `Int8s`. For scalable predicates (masks), the naming convention is `"Mask" + TypeSize + "s"`, such as `Mask8s`.
 
-```go
-// Int8s is a scalable vector of int8s.
-type Int8s struct {
-	vals  [32]int8
-}
+| Element Type | Bit Width | Vector Type | Mask Type |
+| :---- | :---: | :---- | :---- |
+| **Signed Integer** | 8-bit | `Int8s` | `Mask8s` |
+|  | 16-bit | `Int16s` | `Mask16s` |
+|  | 32-bit | `Int32s` | `Mask32s` |
+|  | 64-bit | `Int64s` | `Mask64s` |
+| **Unsigned Integer** | 8-bit | `Uint8s` | `Mask8s` |
+|  | 16-bit | `Uint16s` | `Mask16s` |
+|  | 32-bit | `Uint32s` | `Mask32s` |
+|  | 64-bit | `Uint64s` | `Mask64s` |
+| **Floating-Point** | 32-bit | `Float32s` | `Mask32s` |
+|  | 64-bit | `Float64s` | `Mask64s` |
 
-// Int16s is a scalable vector of int16s.
-type Int16s struct {
-	vals  [16]int16
-}
-
-// Int32s is a scalable vector of int32s.
-type Int32s struct {
-	vals  [8]int32
-}
-
-// Int64s is a scalable vector of int64s.
-type Int64s struct {
-	vals  [4]int64
-}
-
-// Uint8s is a scalable vector of uint8s.
-type Uint8s struct {
-	vals  [32]uint8
-}
-
-// Uint16s is a scalable vector of uint16s.
-type Uint16s struct {
-	vals  [16]uint16
-}
-
-// Uint32s is a scalable vector of uint32s.
-type Uint32s struct {
-	vals  [8]uint32
-}
-
-// Uint64s is a scalable vector of uint64s.
-type Uint64s struct {
-	vals  [4]uint64
-}
-
-// Mask8s is a scalable predicate for 8-bit elements.
-type Mask8s struct {
-	vals   uint64
-}
-
-// Mask16s is a scalable predicate for 16-bit elements.
-type Mask16s struct {
-	vals   uint64
-}
-
-// Mask32s is a scalable predicate for 32-bit elements.
-type Mask32s struct {
-	vals   uint64
-}
-
-// Mask64s is a scalable predicate for 64-bit elements.
-type Mask64s struct {
-	vals   uint64
-}
-```
 Because Go does not currently support dynamic stack allocations, scalable vectors and predicates are assumed to fit within a predefined maximum bound (currently set to 32 bytes for vector types and 8 bytes for predicate types).
 
 All types also come with these utility functions:
@@ -106,15 +58,15 @@ ARM provides the `RDVL` instruction to read the hardware's actual vector length 
 
 #### Generation
 
-* **`Mask<E>sFromCount(count int) Mask<E>s`**  
+* **`<Mask>FromCount(count int) <Mask>`**  
   Creates a mask where the first `count` elements are active (true), and the rest are inactive (false).  
   * *Example*: `Mask8sFromCount(x int) Mask8s`  
-  * *Asm*: `PWHILELT` / `WHILELT`
-* **`Mask<E>sAllTrue() Mask<E>s`**  
+  * *Asm*: `PWHILELT`
+* **`<Mask>AllTrue() <Mask>`**  
   Creates a mask where all elements are active.  
   * *Example*: `Mask8sAllTrue() Mask8s`  
   * *Asm*: `PTRUE`
-* **`Mask<E>sAllFalse() Mask<E>s`**  
+* **`<Mask>AllFalse() <Mask>`**  
   Creates a mask where all elements are inactive.  
   * *Example*: `Mask8sAllFalse() Mask8s`  
   * *Asm*: `PFALSE`
@@ -124,26 +76,15 @@ ARM provides the `RDVL` instruction to read the hardware's actual vector length 
 #### Logic and Bitwise Operations
 
 Element-wise logical operations between masks of the same element type.
-* **`m.And(n Mask<E>s) Mask<E>s`** Bitwise AND between two masks.  
+* **`m.And(n <Mask>) <Mask>`** Bitwise AND between two masks.  
   * *Asm*: `PAND`
-* **`m.Or(n Mask<E>s) Mask<E>s`** Bitwise OR.  
+* **`m.Or(n <Mask>) <Mask>`** Bitwise OR.  
   * *Asm*: `PORR`
-* **`m.Xor(n Mask<E>s) Mask<E>s`** Bitwise XOR.  
+* **`m.Xor(n <Mask>) <Mask>`** Bitwise XOR.  
   * *Asm*: `PEOR`
-* **`m.AndNot(n Mask<E>s) Mask<E>s`** Bitwise AND NOT (`m &^ n`).  
-  * *Asm*: `PANDN`
-* **`m.Not() Mask<E>s`** Bitwise invert mask.  
-  * *Asm*: `PNOT`
 
 #### Reductions
 
-Querying properties of a mask.
-* **`m.Any() bool`** Returns true if at least one element in the mask is active.  
-  * *Asm*: `PTEST`
-* **`m.All() bool`** Returns true if all elements in the mask are active.  
-  * *Asm*: `PTEST`
-* **`m.None() bool`** Returns true if no elements in the mask are active.  
-  * *Asm*: `PTEST`
 * **`m.CountActive() int`** Returns the number of active elements.  
   * *Asm*: `CNTP`
 
@@ -153,16 +94,16 @@ SVE predicates are conceptually layout-identical bitmasks (1 bit per byte), but 
 
 ##### Widen Elements
 Unpack and widens (by padding 0 bits element-wise) a predicate of narrower elements (e.g., 8-bit) into wider elements (e.g., 16-bit).
-* **`m.UnpackWidenLo() Mask<Wider>s`** Unpack and widen the low half of mask `m` to the next wider element size mask.
+* **`m.UnpackWidenLo() <MaskWider>`** Unpack and widen the low half of mask `m` to the next wider element size mask.
   * *Example*: `(m Mask8s) WidenLo() Mask16s`  
   * *Asm*: `PUNPKLO`
-* **`m.UnpackWidenHi() Mask<Wider>s`** Unpack and widen the high half of mask `m` to the next wider element size mask.
+* **`m.UnpackWidenHi() <MaskWider>`** Unpack and widen the high half of mask `m` to the next wider element size mask.
   * *Example*: `(m Mask8s) WidenHi() Mask16s`  
   * *Asm*: `PUNPKHI`
 
 ##### Narrow Elements
 Pack and narrow two masks (low and high halves) into a single mask for elements.
-* **`lo.PackNarrow(hi Mask<Wider>s) Mask<Narrower>s`** Pack low and high masks of wider elements into a narrower element size mask.
+* **`lo.PackNarrow(hi <MaskWider>) <MaskNarrower>`** Pack low and high masks of wider elements into a narrower element size mask.
   * *Example*: `(lo Mask16s) PackNarrow(hi Mask16s) Mask8s`  
   * *Asm*: `PUZP1`
 
@@ -180,12 +121,12 @@ Pack two masks (odd or even elements) into a single mask for elements.
 #### Comparions Generating Masks
 
 All scalable vector types support comparison operations that yield their corresponding mask type:
-* **`x.Equal(y Vector) Mask`** Element-wise $x == y$.
-* **`x.NotEqual(y Vector) Mask`** Element-wise $x \neq y$.
-* **`x.Greater(y Vector) Mask`** Element-wise $x > y$.
-* **`x.GreaterEqual(y Vector) Mask`** Element-wise $x \ge y$.
-* **`x.Less(y Vector) Mask`** Element-wise $x < y$.
-* **`x.LessEqual(y Vector) Mask`** Element-wise $x \le y$.
+* **`x.Equal(y <Vector>) Mask`** Element-wise $x == y$.
+* **`x.NotEqual(y <Vector>) Mask`** Element-wise $x \neq y$.
+* **`x.Greater(y <Vector>) Mask`** Element-wise $x > y$.
+* **`x.GreaterEqual(y <Vector>) Mask`** Element-wise $x \ge y$.
+* **`x.Less(y <Vector>) Mask`** Element-wise $x < y$.
+* **`x.LessEqual(y <Vector>) Mask`** Element-wise $x \le y$.
   * *Example*: `(x Int8s) Greater(y Int8s) Mask8s`  
   * *Asm*: `ZCMPGT`, `ZCMPEQ`, `ZCMPGE`, `ZCMPLE`, etc.
 
@@ -194,33 +135,31 @@ All scalable vector types support comparison operations that yield their corresp
 All SVE vector types support a rich set of vector operations. To leverage SVE's hardware predication, operations can be seamlessly governed by a mask.
 
 #### 1. Element-wise Arithmetic
-* **`x.Add(y Vector) Vector`** element-wise $x + y$. (Asm: `ZADD`)
-* **`x.Sub(y Vector) Vector`** element-wise $x - y$. (Asm: `ZSUB`)
-* **`x.Mul(y Vector) Vector`** element-wise $x \times y$. (Asm: `ZMUL`)
-* **`x.Div(y Vector) Vector`** element-wise $x / y$ (floating-point types only). (Asm: `ZFDIV`)
-* **`x.Min(y Vector) Vector`** element-wise minimum. (Asm: `SMIN` / `UMIN` / `FMIN`)
-* **`x.Max(y Vector) Vector`** element-wise maximum. (Asm: `SMAX` / `UMAX` / `FMAX`)
-* **`x.Abs() Vector`** element-wise absolute value. (Asm: `SABS` / `FABS`)
-* **`x.Neg() Vector`** element-wise negation. (Asm: `SNEG` / `FNEG`)
-* **`x.Sqrt() Vector`** element-wise square root (floating-point types only). (Asm: `FSQRT`)
+* **`x.Add(y <Vector>) <Vector>`** element-wise $x + y$. (Asm: `ZADD`)
+* **`x.Sub(y <Vector>) <Vector>`** element-wise $x - y$. (Asm: `ZSUB`)
+* **`x.Mul(y <Vector>) <Vector>`** element-wise $x \times y$. (Asm: `ZMUL`)
+* **`x.Div(y <Vector>) <Vector>`** element-wise $x / y$ (floating-point types only). (Asm: `ZFDIV`)
+* **`x.Min(y <Vector>) <Vector>`** element-wise minimum. (Asm: `SMIN` / `UMIN` / `FMIN`)
+* **`x.Max(y <Vector>) <Vector>`** element-wise maximum. (Asm: `SMAX` / `UMAX` / `FMAX`)
+* **`x.Abs() <Vector>`** element-wise absolute value. (Asm: `SABS` / `FABS`)
+* **`x.Neg() <Vector>`** element-wise negation. (Asm: `SNEG` / `FNEG`)
+* **`x.Sqrt() <Vector>`** element-wise square root (floating-point types only). (Asm: `FSQRT`)
 
 #### 2. Bitwise Logic
-* **`x.And(y Vector) Vector`** bitwise $x \ \& \ y$. (Asm: `AND`)
-* **`x.Or(y Vector) Vector`** bitwise $x \ | \ y$. (Asm: `ORR`)
-* **`x.Xor(y Vector) Vector`** bitwise $x \ \text{xor} \ y$. (Asm: `EOR`)
-* **`x.AndNot(y Vector) Vector`** bitwise $x \ \& \ \sim y$. (Asm: `BIC`)
-* **`x.Not() Vector`** bitwise inversion. (Asm: `NOT`)
+* **`x.And(y <Vector>) <Vector>`** bitwise $x \\& y$. (Asm: `ZAND`)
+* **`x.Or(y <Vector>) <Vector>`** bitwise $x | y$. (Asm: `ZORR`)
+* **`x.Xor(y <Vector>) <Vector>`** bitwise $x \oplus \ y$. (Asm: `ZEOR`)
 
 #### 3. Shifts (Integer types only)
-* **`x.ShiftLeft(bits uint) Vector`** shifts lanes left. (Asm: `LSL`)
-* **`x.ShiftRightLogical(bits uint) Vector`** logical shift right. (Asm: `LSR`)
-* **`x.ShiftRightArithmetic(bits uint) Vector`** arithmetic shift right. (Asm: `ASR`)
+* **`x.ShiftLeft(shift uint64) <Vector>`** shifts lanes left. (Asm: `ZLSL`)
+* **`x.ShiftRightLogical(shift uint64) <Vector>`** logical shift right. (Asm: `ZLSR`)
+* **`x.ShiftRightArithmetic(shift uint64) <Vector>`** arithmetic shift right. (Asm: `ZASR`)
 
 #### 4. Type Conversions and Extensions
 SVE supports sign/zero extension and truncation:
 * **`x.ExtendLo() <WiderVector>`** Widens and sign/zero extends the low half of vector `x` to the next wider vector type. (Asm: `SUNPKLO` / `UUNPKLO`)
 * **`x.ExtendHi() <WiderVector>`** Widens and sign/zero extends the high half of vector `x` to the next wider vector type. (Asm: `SUNPKHI` / `UUNPKHI`)
-* **`lo.Pack(hi Vector) <NarrowerVector>`** Packs two wider vectors `lo` and `hi` into a narrower vector type. (Asm: `UZP1`)
+* **`lo.Pack(hi <Vector>) <NarrowerVector>`** Packs two wider vectors `lo` and `hi` into a narrower vector type. (Asm: `UZP1`)
 
 #### 5. Horizontal Reductions
 Reductions compute a scalar value across all lanes of a scalable vector:
@@ -231,12 +170,12 @@ Reductions compute a scalar value across all lanes of a scalable vector:
 #### 6. Fluent Predication and Peephole Optimization
 Nearly all SVE arithmetic, logic, and memory instructions can be governed by a predicate. To provide a clean, idiomatic Go API without doubling the method count (e.g., avoiding `AddMasked`, `SubMasked`, etc.), we propose a fluent masking pattern:
 * **`x.Masked(m Mask) Vector`** Returns a vector with elements of `x` where mask `m` is active, and `0` otherwise (Zeroing Predication).
-* **`x.Merge(y Vector, m Mask) Vector`** Returns `x` where mask `m` is active, and elements of `y` where `m` is inactive (Merging Predication).
+* **`x.IfElse(y Vector, m Mask) Vector`** Returns `x` where mask `m` is active, and elements of `y` where `m` is inactive (Merging Predication).
 
 **Peephole Compiler Lowering**:  
-When the Go compiler encounters an unmasked operation followed immediately by a `.Masked(m)` or `.Merge(y, m)` call, it will optimize it and generate a single predicated instruction on SVE.
+When the Go compiler encounters an unmasked operation followed immediately by a `.Masked(m)` or `.IfElse(y, m)` call, it will optimize it and generate a single predicated instruction on SVE.
 * *Example*: `xv.Add(yv).Masked(p)` lowers to a single predicated SVE `ADD` instruction with zeroing predication (`ADD Z0.B, P0/Z, Z0.B, Z1.B`).
-* *Example*: `xv.Add(yv).Merge(zv, p)` lowers to a single SVE `ADD` instruction with merging predication (`ADD Z0.B, P0/M, Z0.B, Z1.B`).
+* *Example*: `xv.Add(yv).IfElse(zv, p)` lowers to a single SVE `ADD` instruction with merging predication (`ADD Z0.B, P0/M, Z0.B, Z1.B`).
 
 ## Example
 Below is an example test demonstrating a Vector Length Agnostic (VLA) loop that adds two slices of `int8`s together. SVE allows the loop stride to safely scale to the hardware's vector length while automatically masking the tail end of the slice.
