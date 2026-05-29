@@ -135,15 +135,15 @@ All scalable vector types support comparison operations that yield their corresp
 All SVE vector types support a rich set of vector operations. To leverage SVE's hardware predication, operations can be seamlessly governed by a mask.
 
 #### 1. Element-wise Arithmetic
-* **`x.Add(y <Vector>) <Vector>`** element-wise $x + y$. (Asm: `ZADD`)
-* **`x.Sub(y <Vector>) <Vector>`** element-wise $x - y$. (Asm: `ZSUB`)
-* **`x.Mul(y <Vector>) <Vector>`** element-wise $x \times y$. (Asm: `ZMUL`)
-* **`x.Div(y <Vector>) <Vector>`** element-wise $x / y$ (floating-point types only). (Asm: `ZFDIV`)
-* **`x.Min(y <Vector>) <Vector>`** element-wise minimum. (Asm: `SMIN` / `UMIN` / `FMIN`)
-* **`x.Max(y <Vector>) <Vector>`** element-wise maximum. (Asm: `SMAX` / `UMAX` / `FMAX`)
-* **`x.Abs() <Vector>`** element-wise absolute value. (Asm: `SABS` / `FABS`)
-* **`x.Neg() <Vector>`** element-wise negation. (Asm: `SNEG` / `FNEG`)
-* **`x.Sqrt() <Vector>`** element-wise square root (floating-point types only). (Asm: `FSQRT`)
+* **`x.Add(y <Vector>) <Vector>`** element-wise $x + y$. (Asm: `ZADD` / `ZFADD`)
+* **`x.Sub(y <Vector>) <Vector>`** element-wise $x - y$. (Asm: `ZSUB`/ `ZFSUB`)
+* **`x.Mul(y <Vector>) <Vector>`** element-wise $x \times y$. (Asm: `ZMUL` / `ZFMUL`)
+* **`x.Div(y <Vector>) <Vector>`** element-wise $x / y$ (floating-point types only). (Asm: `ZSDIV`, `ZUDIV`, `ZFDIV`)
+* **`x.Min(y <Vector>) <Vector>`** element-wise minimum. (Asm: `ZSMIN` / `ZUMIN` / `ZFMIN`)
+* **`x.Max(y <Vector>) <Vector>`** element-wise maximum. (Asm: `ZSMAX` / `ZUMAX` / `ZFMAX`)
+* **`x.Abs() <Vector>`** element-wise absolute value. (Asm: `ZABS` / `ZFABS`)
+* **`x.Neg() <Vector>`** element-wise negation. (Asm: `ZNEG` / `ZFNEG`)
+* **`x.Sqrt() <Vector>`** element-wise square root (floating-point types only). (Asm: `ZFSQRT`)
 
 #### 2. Bitwise Logic
 * **`x.And(y <Vector>) <Vector>`** bitwise $x \\& y$. (Asm: `ZAND`)
@@ -151,9 +151,10 @@ All SVE vector types support a rich set of vector operations. To leverage SVE's 
 * **`x.Xor(y <Vector>) <Vector>`** bitwise $x \oplus \ y$. (Asm: `ZEOR`)
 
 #### 3. Shifts (Integer types only)
-* **`x.ShiftLeft(shift uint64) <Vector>`** shifts lanes left. (Asm: `ZLSL`)
-* **`x.ShiftRightLogical(shift uint64) <Vector>`** logical shift right. (Asm: `ZLSR`)
-* **`x.ShiftRightArithmetic(shift uint64) <Vector>`** arithmetic shift right. (Asm: `ZASR`)
+* **`x.ShiftAllLeft(shift uint64) <Vector>`** shifts all elements left. (Asm: `ZLSL`)
+* **`x.ShiftLeft(y <Vector>) <Vector>`** shifts elements left. (Asm: `ZLSL`)
+* **`x.ShiftAllRight(shift uint64) <Vector>`** shifts all elements right. (Asm: `ZLSL` / `ZASR`)
+* **`x.ShiftRight(y <Vector>) <Vector>`** shifts elements right. (Asm: `ZLSL` / `ZASR`)
 
 #### 4. Type Conversions and Extensions
 SVE supports sign/zero extension and truncation:
@@ -162,10 +163,10 @@ SVE supports sign/zero extension and truncation:
 * **`lo.Pack(hi <Vector>) <NarrowerVector>`** Packs two wider vectors `lo` and `hi` into a narrower vector type. (Asm: `UZP1`)
 
 #### 5. Horizontal Reductions
-Reductions compute a scalar value across all lanes of a scalable vector:
-* **`x.Sum() elem`** Computes the sum of all active lanes. (Asm: `SADDV` / `UADDV` / `FADDV`)
-* **`x.Min() elem`** Finds the minimum value among active lanes. (Asm: `SMINV` / `UMINV` / `FMINV`)
-* **`x.Max() elem`** Finds the maximum value among active lanes. (Asm: `SMAXV` / `UMAXV` / `FMAXV`)
+Reductions compute a scalar value across all elements of a scalable vector:
+* **`x.Sum() elem`** Computes the sum of all active elements. (Asm: `SADDV` / `UADDV` / `FADDV`)
+* **`x.Min() elem`** Finds the minimum value among active elements. (Asm: `SMINV` / `UMINV` / `FMINV`)
+* **`x.Max() elem`** Finds the maximum value among active elements. (Asm: `SMAXV` / `UMAXV` / `FMAXV`)
 
 #### 6. Fluent Predication and Peephole Optimization
 Nearly all SVE arithmetic, logic, and memory instructions can be governed by a predicate. To provide a clean, idiomatic Go API without doubling the method count (e.g., avoiding `AddMasked`, `SubMasked`, etc.), we propose a fluent masking pattern:
