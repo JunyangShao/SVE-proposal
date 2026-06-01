@@ -9,7 +9,7 @@ This proposal only covers SVE and some SVE2. Specifically, loads from and stores
 
 ### Naming alignment
 
-Where an operation has a direct semantic counterpart in `simd/archsimd` (the AMD64 API in #73787), this proposal uses the same method name (`Add`, `Sub`, `Mul`, `Min`, `Max`, `Sqrt`, `Abs`, `Neg`, `And`, `Or`, `Xor`, `AndNot`, `Not`, `ShiftLeft`/`ShiftRight`, `RotateLeft`/`RotateRight`, `AddSaturated`/`SubSaturated`, `MulAdd`, `OnesCount`, `LeadingZeros`, `Equal`/`NotEqual`/`Less`/`LessEqual`/`Greater`/`GreaterEqual`, `Masked`, `IfElse`, etc.). The element/vector type names follow the Midway-style plural convention (`Int8s`, `Float32s`, ...) because that matches SVE's length-agnostic nature. Signatures use Midway types throughout so that user code can switch between architectures with minimal surface change.
+Where an operation has a direct semantic counterpart in `simd/archsimd` (the AMD64 API in #73787), this proposal uses the same method name (`Add`, `Sub`, `Mul`, `Min`, `Max`, `Sqrt`, `Abs`, `Neg`, `And`, `Or`, `Xor`, `AndNot`, `Not`, `ShiftLeft`/`ShiftRight`, `RotateLeft`/`RotateRight`, `AddSaturated`/`SubSaturated`, `MulAdd`, `OnesCount`, `LeadingZeros`, `Equal`/`NotEqual`/`Greater`/`GreaterEqual`, `Masked`, `IfElse`, etc.). The element/vector type names follow the Midway-style plural convention (`Int8s`, `Float32s`, ...) because that matches SVE's length-agnostic nature. Signatures use Midway types throughout so that user code can switch between architectures with minimal surface change.
 
 For names that are already specified in Midway, unless documented in comment, they have the same semantic as [Midway](https://github.com/golang/go/issues/78902). `// Asm` documents their Arm64 instruction title in the spec table.
 
@@ -43,7 +43,7 @@ Scalable vector types use `ElementType + "s"`. For example, a scalable vector of
 
 **No 16-bit floats (yet).** SVE hardware supports half-precision (`fp16`) and brain-float (`bf16`) lanes, but Go has no `float16` / `bfloat16` primitive scalar type, and we want the SVE vector element types in `archsimd` to remain a one-to-one mapping to Go's primitive scalar types. If/when Go gains those scalar types, `Float16s` and `BFloat16s` (with mask `Mask16s`) can be added without disturbing the rest of this surface.
 
-Because Go does not currently support dynamic stack allocations, scalable vectors and predicates are assumed to fit within a predefined maximum bound (currently set to 32 bytes for vector types and 8 bytes for predicate types).
+Because Go does not currently support dynamic stack allocations, scalable vectors and predicates are assumed to fit within a predefined maximum bound (currently set to 32 bytes for vector types and 4 bytes for predicate types).
 
 All types come with these utility methods:
 
@@ -74,7 +74,7 @@ Gather loads (from a slice plus a vector of indices):
 // Out of bound elements will be zeroed.
 //
 // Asm: Emulated (predicate construction + "LD1B (scalar plus vector)")
-func (idx Int8s) GatherInt8sPart(base []int8) Int8s
+func (idx Uint8s) GatherInt8sPart(base []int8) Int8s
 // ... analogous for all other vector types
 ```
 
@@ -92,18 +92,18 @@ Scatter stores:
 
 ```go
 // ScatterInt8sPart stores value into a slice.
-// base[idx[i]] = [x[i]].
+// base[idx[i]] = x[i].
 // Out of bound elements will be skipped
 //
 // Asm: Emulated (predicate construction + "ST1B (scalar plus vector)")
-func (x Int8s) ScatterInt8sPart(idx Int8s, base []int8)
+func (x Int8s) ScatterInt8sPart(idx Uint8s, base []int8)
 // ... analogous for all other vector types
 ```
 
 *Note: with the proper predicate constructed by the compiler, these gather/scatter loads/stores can be bound-safe for Go.*
 
 #### Mask Loads and Stores
-A predicate is loaded from / stored to a `*uint32` bitmask, where bit `i` corresponds to lane `i`'s active state:
+A predicate is loaded from / stored to a bitmask, where bit `i` corresponds to lane `i`'s active state:
 
 ```go
 // LoadMask8s loads a predicate from a bitmask. The bits are concatenated
@@ -130,7 +130,7 @@ func (m Mask8s) Store(bits []uint16)
 //
 // Asm: WHILELO (predicate)
 func Mask8sFromCount(count int) Mask8s
-// Mask8sAllTrue returns a mask that has all its 
+// Mask8sAllTrue returns a mask that has all its elements active.
 //
 // Asm: PTRUE (predicate)
 func Mask8sAllTrue() Mask8s
@@ -171,13 +171,13 @@ func (m Mask8s) Not() Mask8s                // Asm: NOT (predicate)
 //
 // Asm: CNTP (predicate)
 func (m Mask8s) CountActive() int
-// FirstIsActive returns true if the first elements in m is active.
+// FirstIsActive returns true if the first element in m is active.
 //
-// Asm: PTEST
+// Asm: Emulated (with PTEST)
 func (m Mask8s) FirstIsActive() bool
-// LastIsActive returns true if the last elements in m is active.
+// LastIsActive returns true if the last element in m is active.
 //
-// Asm: PTEST
+// Asm: Emulated (with PTEST)
 func (m Mask8s) LastIsActive() bool
 // ... analogous for wider masks
 ```
@@ -253,19 +253,17 @@ These conversions do not exist on amd64 or arm64. However this proposal still in
 #### Permutations
 
 ```go
-// Reverse reverse the order of elements in x.
-//	x[i] = x[x.Len() - 1 - i]
+// Reverse reverses the order of elements in x.
+//	result[i] = x[x.Len() - 1 - i]
+//
 // Asm: REV (predicate)
 func (m Mask8s) Reverse() Mask8s
 // InterleaveLo interleaves the lower half of x with the lower half of y.
-//	x = [x0, x1], y = [y0, y1]
-//	result = [x0, y0, x1, y1]
 //
 // Asm: ZIP1 (predicate)
 func (x Mask8s) InterleaveLo(y Mask8s) Mask8s
 // InterleaveHi interleaves the upper half of x with the upper half of y.
 //	
-//
 // Asm: ZIP2 (predicate)
 func (x Mask8s) InterleaveHi(y Mask8s) Mask8s
 // InterleaveEven interleaves the even-indexed lanes of x and y,
@@ -308,7 +306,7 @@ All SVE vector operations are presented in their unconditional form. Predication
 func (x Int8s) Add(y Int8s) Int8s        // Asm: ADD (vectors, unpredicated)
 func (x Int8s) Sub(y Int8s) Int8s        // Asm: SUB (vectors, unpredicated)
 func (x Int8s) Mul(y Int8s) Int8s        // Asm: MUL (vectors, unpredicated)
-func (x Int8s) Abs() Int8s               // Asm: ABS (predicated)
+func (x Int8s) Abs() Int8s               // Asm: ABS
 func (x Int8s) Min(y Int8s) Int8s        // Asm: SMIN (vectors)
 func (x Int8s) Max(y Int8s) Int8s        // Asm: SMAX (vectors)
 // ... analogous for all other vector types
@@ -453,7 +451,7 @@ func (lo Int16s) PackTrunc(hi Int16s) Int8s
 ```
 
 ##### Same-width Packing
-Pack the even- or odd-indexed lanes of two masks into a single mask.
+Pack the even- or odd-indexed lanes of two vectors into a single vector.
 
 ```go
 // PackEven extracts the even-indexed elements from lo and hi and concatenates them.
@@ -489,16 +487,16 @@ Cross-width float conversions:
 
 ```go
 // UnpackWidenEvenToFloat64s performs the following operation:
-//	result[i] = Float32(float64(x[2i]))
+//	result[i] = float64(x[2i])
 //
 // Asm: FCVT
 func (x Float32s) UnpackWidenEvenToFloat64s() Float64s
 // EvenNarrowToFloat32s performs the following operation:
-//	result[2i] = Float32((y[i]))
+//	result[2i] = float32((y[i]))
 //	result[2i+1] = 0
 //
 // Asm: FCVT
-func (y Float64s) EvenNarrowToFloat32s() Float32s
+func (x Float64s) EvenNarrowToFloat32s() Float32s
 ```
 
 #### Horizontal Reductions
@@ -544,20 +542,20 @@ func BroadcastInt8s(v int8) Int8s             // Asm: DUP (scalar)
 // A non-constant value of step may result in significantly worse performance for this operation.
 //
 // Asm: INDEX (scalar, immediate)
-func IndexInt8s(start, step int8) Int8s
+func ArithSeqInt8s(start, step int8) Int8s
 // ... analogous for Int16s, Int32s, Int64s, Uint*s
 ```
 
 Element Getters:
 
 ```go
-// GetElemLastActive extract the last active element in x governed by m
+// GetElemLastActive extracts the last active element in x governed by m
 // If m is all false, the highest-numbered element is extracted.
 //
 // Asm: LASTB
 func (x Int8s) GetElemLastActive(m Mask8s) int8
-// GetElemAfterLastActive extract the element right after the last active element in x governed by m.
-// If m is all false, the result is 0. If the last active element in x is the last element in x,
+// GetElemAfterLastActive extracts the element right after the last active element in x governed by m.
+// If m is all false or the last active element in x is the last element in x,
 // the result will be x[0].
 //
 // Asm: LASTA
@@ -569,18 +567,19 @@ func (x Int8s) GetElemAfterLastActive(m Mask8s) int8
 
 Element Setters:
 ```go
-// SetElem sets the element at index to v.
+// SetElem sets the element at index%32 to v.
 //
 // Asm: Emulated (Predicate construction + "CPY (scalar)")
-func (x Int8s) SetElem(index uint8, v uint8) Int8s
+func (x Int8s) SetElem(index uint8, v int8) Int8s
 // ... analogous for all other vector types
 ```
 
 #### Permutations
 
 ```go
-// Reverse reverse the order of elements in x.
-//	x[i] = x[x.Len() - 1 - i]
+// Reverse reverses the order of elements in x.
+//	result[i] = x[x.Len() - 1 - i]
+//
 // Asm: REV (vectors)
 func (x Int8s) Reverse() Int8s
 func (x Int8s) InterleaveLo(y Int8s) Int8s // Asm: ZIP1 (vectors)
@@ -596,7 +595,7 @@ func (x Int8s) InterleaveEven(y Int8s) Int8s
 // Asm: TRN2 (vectors)
 func (x Int8s) InterleaveOdd(y Int8s) Int8s
 func (x Int8s) PermuteOrZero(idx Uint8s) Int8s // Asm: TBL
-func (x Int8s) Compress(m Mask8s) Int8s        // Asm: COMPACT (32/64-bit only on base SVE)
+func (x Int32s) Compress(m Mask8s) Int32s      // Asm: COMPACT (32/64-bit only on base SVE)
 // Splice splices x and y with m: the a range in x governed by m's first and last active element will
 // be copied to the result's lower part, and the remaining high part will be copied from y's low part.
 // For example:
