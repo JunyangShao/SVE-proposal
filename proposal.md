@@ -9,6 +9,12 @@ This proposal only covers SVE and some SVE2. Specifically, loads from and stores
 
 Where an operation has a direct semantic counterpart in `simd/archsimd` (the AMD64 API in #73787), this proposal uses the same method name (`Add`, `Sub`, `Mul`, `Min`, `Max`, `Sqrt`, `Abs`, `Neg`, `And`, `Or`, `Xor`, `AndNot`, `Not`, `ShiftLeft`/`ShiftRight`, `RotateLeft`/`RotateRight`, `AddSaturated`/`SubSaturated`, `MulAdd`, `OnesCount`, `LeadingZeros`, `Equal`/`NotEqual`/`Less`/`LessEqual`/`Greater`/`GreaterEqual`, `Masked`, `Merge`, etc.). The element/vector type names follow the Midway-style plural convention (`Int8s`, `Float32s`, ...) because that matches SVE's length-agnostic nature. Signatures use Midway types throughout so that user code can switch between architectures with minimal surface change.
 
+### Predication
+
+The SVE API all comes without predication, the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
+
+Many instructions take a predicate `P`, while a lot of them also come with an unpredicated form, some does not. For instructions that comes with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that does not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrisic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user call `Masked` and `IfElse` right after.
+
 ## API Overview
 
 ### Types
@@ -38,11 +44,11 @@ func (x <Vector>) Len() int        // number of elements (vector types)
 func (x <Vector>) String() string  // human-readable form (vector and mask types)
 ```
 
-ARM provides the `RDVL` instruction to read the hardware's actual vector length at runtime. When the `archsimd` package is imported, `RDVL` will be checked during initialization; if the hardware vector length exceeds 32 bytes, the package will panic. We believe 32 bytes (256 bits) covers the vast majority of SVE chips currently on the market (e.g., Neoverse V1). Please let us know if this constraint needs to be expanded.
+ARM provides the `RDVL` instruction to read the hardware's actual vector length at runtime. When the `archsimd` package is imported, `RDVL` will be checked during initialization; if the hardware vector length exceeds 32 bytes, the package will panic. We believe 32 bytes (256 bits) covers the vast majority of SVE chips currently on the market (e.g., Neoverse V1). Please let us know if this constraint needs to be expanded. The APIs supported are based on `ISA_A64_xml_A_profile-2025-12`.
 
 ### Memory Operations (Loads and Stores)
 
-For names that are already specified in Midway, unless documented in comment, they have the same semantic as [Midway](https://github.com/golang/go/issues/78902). `// Asm` documents their Arm64 instruction title from the spec table.
+For names that are already specified in Midway, unless documented in comment, they have the same semantic as [Midway](https://github.com/golang/go/issues/78902). `// Asm` documents their Arm64 instruction title in the spec table.
 
 #### Vector Loads
 
@@ -113,14 +119,17 @@ func Mask8sAllTrue() Mask8s
 
 // We don't need a Mask8sAllFalse, which is PFALSE (predicate), that would be the zero value of P.
 
-// First returns a mask that activate only the first active element of m.
+// First returns a mask that activates only the first active element of m.
 //
 // Asm: PFIRST
 func (m Mask8s) First() Mask8s
-// Next returns a mask that activate the next element // TODO: finish this
-func (m Mask8s) Next() Mask8s // next-active under governing predicate. Asm: PNEXT
+// Next returns a mask that activates the next element after the last active element of m.
+// All other elements will be set to inactive.
+// If m is all inactive, the returned mask will have its first element activated.
+//
+// Asm: PNEXT
+func (m Mask8s) Next() Mask8s
 // ... analogous for all other mask type
-
 ```
 
 *Note:* `PTRUE` has more variants (e.g., a fixed power-of-two count). They can be exposed later if useful.
@@ -154,31 +163,41 @@ func (m Mask8s) FirstIsActive() bool
 func (m Mask8s) LastIsActive() bool
 // ... analogous for wider masks
 ```
+*Note: PTEST could be peepholed with PFIRST and PNEXT.*
 
 *Note: FIRSTP looks like a useful instruction, however it's SVE2, should we support it?*
 
 #### Conversions
-SVE predicates are layout-identical bitmasks (1 bit per byte), but are typed by lane width in Go for type safety. Conversions reshape the lane width without changing the underlying bits.
+SVE predicates are layout-identical bitmasks (1 bit per byte), but are typed by lane width in Go for type safety. Conversions can change a mask type to another.
 
 ##### Widen Elements
 Unpack and widen (by padding 0 bits) a predicate of narrower lanes into wider lanes.
 
 ```go
-func (m Mask8s) UnpackWidenLo() Mask16s     // Asm: PUNPKLO
-func (m Mask8s) UnpackWidenHi() Mask16s     // Asm: PUNPKHI
-func (m Mask16s) UnpackWidenLo() Mask32s
-func (m Mask16s) UnpackWidenHi() Mask32s
-func (m Mask32s) UnpackWidenLo() Mask64s
-func (m Mask32s) UnpackWidenHi() Mask64s
+// UnpackWidenLo unpacks the lanes from the lower half of the source mask m
+// and widens them by padding 0s to twice their lane width.
+//
+// Asm: PUNPKLO
+func (m Mask8s) UnpackWidenLo() Mask16s
+
+// UnpackWidenHi unpacks the lanes from the upper half of the source mask m
+// and widens them by padding 0s to twice their lane width.
+//
+// Asm: PUNPKHI
+func (m Mask8s) UnpackWidenHi() Mask16s
+// ... analogous for wider masks
 ```
 
 ##### Narrow Elements
 Pack two wider-lane masks (low/high halves) into a single narrower-lane mask.
 
 ```go
-func (lo Mask16s) PackNarrow(hi Mask16s) Mask8s     // Asm: UZP1 (predicate form)
-func (lo Mask32s) PackNarrow(hi Mask32s) Mask16s
-func (lo Mask64s) PackNarrow(hi Mask64s) Mask32s
+// PackNarrow packs two wider-lane masks into a single narrower-lane mask.
+// lo will be placed in the lower half of the result, and hi will be placed in the upper half.
+//
+// Asm: UZP1 (predicates)
+func (lo Mask16s) PackNarrow(hi Mask16s) Mask8s
+// ... analogous for wider masks
 ```
 
 *Note:* `UZP1` on predicates can also do interleaved deinterleaving when operand and result types are the same; that is exposed below under `PackEven`/`PackOdd`.
@@ -187,29 +206,50 @@ func (lo Mask64s) PackNarrow(hi Mask64s) Mask32s
 Pack the even- or odd-indexed lanes of two masks into a single mask.
 
 ```go
-func (lo Mask8s) PackEven(hi Mask8s) Mask8s         // Asm: UZP1 (predicate form)
-func (lo Mask8s) PackOdd(hi Mask8s) Mask8s          // Asm: UZP2 (predicate form)
-// ... analogous for Mask16s, Mask32s, Mask64s
+// PackEven extracts the even-indexed elements from lo and hi and concatenates them.
+// lo's even elements are placed in the lower half of the result, and hi's even
+// elements are placed in the upper half.
+//
+// Asm: UZP1 (predicates)
+func (lo Mask8s) PackEven(hi Mask8s) Mask8s
+
+// PackOdd extracts the odd-indexed elements from lo and hi and concatenates them.
+// lo's odd elements are placed in the lower half of the result, and hi's odd
+// elements are placed in the upper half.
+//
+// Asm: UZP2 (predicates)
+func (lo Mask8s) PackOdd(hi Mask8s) Mask8s
+// ... analogous for wider masks
 ```
+
+#### No-op conversions
+These conversions reinterpret the bits of a mask. They are no-op operations.
+```go
+func (m Mask8s) AsMask16s() Mask16s
+func (m Mask8s) AsMask32s() Mask32s
+func (m Mask8s) AsMask64s() Mask64s
+// ... analogous for wider masks
+```
+These conversions do not exist on amd64 or arm64. However this proposal still includes them because SVE predicates are universally applied on byte lane basis regardless of arrangement. Larger mask types use only the bits whose indices are a multiple of the byte size of the mask lane. So it's possible that the user may want to reinterpret the bits in a predicate to apply on different vector arrangements.
+
+Discussions are welcomed!
 
 #### Comparisons Producing Masks
 All scalable vector types support element-wise comparisons that yield the corresponding mask type:
 
 ```go
-func (x Int8s) Equal(y Int8s) Mask8s            // Asm: CMPEQ
-func (x Int8s) NotEqual(y Int8s) Mask8s         // Asm: CMPNE
-func (x Int8s) Greater(y Int8s) Mask8s          // Asm: CMPGT
-func (x Int8s) GreaterEqual(y Int8s) Mask8s     // Asm: CMPGE
-func (x Int8s) Less(y Int8s) Mask8s             // Asm: CMPLT
-func (x Int8s) LessEqual(y Int8s) Mask8s        // Asm: CMPLE
+func (x Int8s) Equal(y Int8s) Mask8s            // Asm: CMPEQ (vectors)
+func (x Int8s) NotEqual(y Int8s) Mask8s         // Asm: CMPNE (vectors)
+func (x Int8s) Greater(y Int8s) Mask8s          // Asm: CMPGT (vectors)
+func (x Int8s) GreaterEqual(y Int8s) Mask8s     // Asm: CMPGE (vectors)
 // ... analogous for all other integer / float vector types
 ```
 
 Floating-point types additionally provide:
 
 ```go
-func (x Float32s) IsNaN() Mask32s               // Asm: FCMUO  Zd, Pg/Z, Zn, Zn
-func (x Float64s) IsNaN() Mask64s
+func (x Float32s) IsNaN() Mask32s // Asm: FCMUO (vectors)
+func (x Float64s) IsNaN() Mask64s // Asm: FCMUO (vectors)
 ```
 
 ### Vector Operations
