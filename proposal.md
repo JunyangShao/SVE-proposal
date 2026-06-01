@@ -15,9 +15,9 @@ For names that are already specified in Midway, unless documented in comment, th
 
 ### Predication
 
-The SVE API all comes without predication, the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
+All SVE API entries come without predication, the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
 
-Many instructions take a predicate `P`, while a lot of them also come with an unpredicated form, some does not. For instructions that comes with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that does not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrisic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user call `Masked` and `IfElse` right after.
+Many instructions take a predicate `P`, while a lot of them also come with an unpredicated form, some do not. For instructions that come with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that do not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrinsic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user calls `Masked` and `IfElse` right after.
 
 ### `MOVPRFX`
 
@@ -93,7 +93,7 @@ Scatter stores:
 ```go
 // ScatterInt8sPart stores value into a slice.
 // base[idx[i]] = x[i].
-// Out of bound elements will be skipped
+// Out of bound elements will be skipped.
 //
 // Asm: Emulated (predicate construction + "ST1B (scalar plus vector)")
 func (x Int8s) ScatterInt8sPart(idx Uint8s, base []int8)
@@ -118,7 +118,7 @@ func LoadMask8s(bits []uint16) Mask8s
 //
 // Asm: Emulated (predicate construction + "STR (predicate)")
 func (m Mask8s) Store(bits []uint16)
-// ... analogous for all other mask type
+// ... analogous for all other mask types
 ```
 
 ### Mask Operations
@@ -147,7 +147,7 @@ func (m Mask8s) First() Mask8s
 //
 // Asm: PNEXT
 func (m Mask8s) Next() Mask8s
-// ... analogous for all other mask type
+// ... analogous for all other mask types
 ```
 
 *Note:* `PTRUE` has more variants (e.g., a fixed power-of-two count). They can be exposed later if useful.
@@ -161,7 +161,7 @@ func (m Mask8s) Or(n Mask8s) Mask8s         // Asm: ORR (predicate)
 func (m Mask8s) Xor(n Mask8s) Mask8s        // Asm: EOR (predicate)
 func (m Mask8s) AndNot(n Mask8s) Mask8s     // Asm: BIC (predicate)
 func (m Mask8s) Not() Mask8s                // Asm: NOT (predicate)
-// ... analogous for all other mask type
+// ... analogous for all other mask types
 ```
 
 #### Tests and Reductions
@@ -492,7 +492,7 @@ Cross-width float conversions:
 // Asm: FCVT
 func (x Float32s) UnpackWidenEvenToFloat64s() Float64s
 // EvenNarrowToFloat32s performs the following operation:
-//	result[2i] = float32((y[i]))
+//	result[2i] = float32((x[i]))
 //	result[2i+1] = 0
 //
 // Asm: FCVT
@@ -534,7 +534,7 @@ func (x Int8s) XorReduce() int8
 
 ```go
 func BroadcastInt8s(v int8) Int8s             // Asm: DUP (scalar)
-// .. analogous for all other vector types.
+// ... analogous for all other vector types.
 
 // ArithSeqInt8s creates an arithmetic sequence with the given start and step:
 //	result[i] = start + i * step
@@ -563,7 +563,7 @@ func (x Int8s) GetElemAfterLastActive(m Mask8s) int8
 // ... analogous for all other vector types
 ```
 
-*Note: These are the intrinsic SVE GetElem operations and they look strange, should we support a clean version of `func (x Int8s) GetElem(i index) int8` that mimics the amd64 API? They will be emulations based on these intrinsics.*
+*Note: These are the intrinsic SVE GetElem operations and they look strange, should we support a clean version of `func (x Int8s) GetElem(i int) int8` that mimics the amd64 API? They will be emulations based on these intrinsics.*
 
 Element Setters:
 ```go
@@ -595,8 +595,8 @@ func (x Int8s) InterleaveEven(y Int8s) Int8s
 // Asm: TRN2 (vectors)
 func (x Int8s) InterleaveOdd(y Int8s) Int8s
 func (x Int8s) PermuteOrZero(idx Uint8s) Int8s // Asm: TBL
-func (x Int32s) Compress(m Mask8s) Int32s      // Asm: COMPACT (32/64-bit only on base SVE)
-// Splice splices x and y with m: the a range in x governed by m's first and last active element will
+func (x Int32s) Compress(m Mask32s) Int32s      // Asm: COMPACT (32/64-bit only on base SVE)
+// Splice splices x and y with m: the range in x governed by m's first and last active element will
 // be copied to the result's lower part, and the remaining high part will be copied from y's low part.
 // For example:
 // x = [1, 2, 3, 4], m = [T, F, T, F], y = [5, 6, 7, 8]
@@ -609,7 +609,7 @@ func (x Int8s) Splice(y Int8s, m Mask8s) Int8s
 
 ## CPU Feature Check
 
-Two new CPU feature will be added: `cpu.ARM64.HasSVE` and `cpu.ARM64.HasSVE2`.
+Two new CPU features will be added: `cpu.ARM64.HasSVE` and `cpu.ARM64.HasSVE2`.
 
 With more extensions we support, we can potentially include more features like SVE2 crypto extensions, etc.
 
