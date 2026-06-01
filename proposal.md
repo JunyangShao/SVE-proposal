@@ -9,13 +9,19 @@ This proposal only covers SVE and some SVE2. Specifically, loads from and stores
 
 ### Naming alignment
 
-Where an operation has a direct semantic counterpart in `simd/archsimd` (the AMD64 API in #73787), this proposal uses the same method name (`Add`, `Sub`, `Mul`, `Min`, `Max`, `Sqrt`, `Abs`, `Neg`, `And`, `Or`, `Xor`, `AndNot`, `Not`, `ShiftLeft`/`ShiftRight`, `RotateLeft`/`RotateRight`, `AddSaturated`/`SubSaturated`, `MulAdd`, `OnesCount`, `LeadingZeros`, `Equal`/`NotEqual`/`Less`/`LessEqual`/`Greater`/`GreaterEqual`, `Masked`, `Merge`, etc.). The element/vector type names follow the Midway-style plural convention (`Int8s`, `Float32s`, ...) because that matches SVE's length-agnostic nature. Signatures use Midway types throughout so that user code can switch between architectures with minimal surface change.
+Where an operation has a direct semantic counterpart in `simd/archsimd` (the AMD64 API in #73787), this proposal uses the same method name (`Add`, `Sub`, `Mul`, `Min`, `Max`, `Sqrt`, `Abs`, `Neg`, `And`, `Or`, `Xor`, `AndNot`, `Not`, `ShiftLeft`/`ShiftRight`, `RotateLeft`/`RotateRight`, `AddSaturated`/`SubSaturated`, `MulAdd`, `OnesCount`, `LeadingZeros`, `Equal`/`NotEqual`/`Less`/`LessEqual`/`Greater`/`GreaterEqual`, `Masked`, `IfElse`, etc.). The element/vector type names follow the Midway-style plural convention (`Int8s`, `Float32s`, ...) because that matches SVE's length-agnostic nature. Signatures use Midway types throughout so that user code can switch between architectures with minimal surface change.
+
+For names that are already specified in Midway, unless documented in comment, they have the same semantic as [Midway](https://github.com/golang/go/issues/78902). `// Asm` documents their Arm64 instruction title in the spec table.
 
 ### Predication
 
 The SVE API all comes without predication, the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
 
 Many instructions take a predicate `P`, while a lot of them also come with an unpredicated form, some does not. For instructions that comes with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that does not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrisic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user call `Masked` and `IfElse` right after.
+
+### `MOVPRFX`
+
+For destructive operations, an `MOVPRFX` will always be generated to prepare the destination register.
 
 ## API Overview
 
@@ -50,15 +56,13 @@ ARM provides the `RDVL` instruction to read the hardware's actual vector length 
 
 ### Memory Operations (Loads and Stores)
 
-For names that are already specified in Midway, unless documented in comment, they have the same semantic as [Midway](https://github.com/golang/go/issues/78902). `// Asm` documents their Arm64 instruction title in the spec table.
-
 #### Vector Loads
 
 Consecutive loads:
 
 ```go
-func LoadInt8s(s []int8) Int8s // Asm: LD1B (scalar plus immediate, single register)
-func LoadInt8sPart(s []int8) Int8s // Asm: LD1B (scalar plus immediate, single register)
+func LoadInt8s(s []int8) Int8s // Emulated (predicate construction + "LD1B (scalar plus immediate, single register)")
+func LoadInt8sPart(s []int8) Int8s // Emulated (predicate construction + "LD1B (scalar plus immediate, single register)")
 // ... analogous for all other vector types
 ```
 
@@ -79,8 +83,8 @@ func (idx Int8s) GatherInt8sPart(base []int8) Int8s
 Consecutive stores:
 
 ```go
-func (x Int8s) Store(s []int8) // Asm: ST1B (scalar plus immediate, single register)
-func (x Int8s) StorePart(s []int8) // Asm: ST1B (scalar plus immediate, single register)
+func (x Int8s) Store(s []int8) // Asm: Emulated (predicate construction + "ST1B (scalar plus immediate, single register)")
+func (x Int8s) StorePart(s []int8) // Asm: Emulated (predicate construction + "ST1B (scalar plus immediate, single register)")
 // ... analogous for all other vector types
 ```
 
@@ -106,13 +110,13 @@ A predicate is loaded from / stored to a `*uint32` bitmask, where bit `i` corres
 // together in little-endian order.
 // If the bits slice doesn't have enough elements to fill the full mask, it will panic.
 //
-// Asm: LDR (predicate)
+// Asm: Emulated (predicate construction + "LDR (predicate)")
 func LoadMask8s(bits []uint16) Mask8s
 // StoreMask8s stores the predicate to a slice of bits. The bits are concatenated
 // together in little-endian order.
 // If the slice doesn't have enough elements to store the full mask, it will panic.
 //
-// Asm: STR (predicate)
+// Asm: Emulated (predicate construction + "STR (predicate)")
 func (m Mask8s) Store(bits []uint16)
 // ... analogous for all other mask type
 ```
@@ -296,7 +300,7 @@ func (x Float64s) IsNaN() Mask64s // Asm: FCMUO (vectors)
 ```
 
 ### Vector Operations
-All SVE vector operations are presented in their unconditional form. Predication is applied through the fluent `Masked` / `Merge` chaining described at the end of this section, and the compiler folds the chain into a single predicated instruction.
+All SVE vector operations are presented in their unconditional form. Predication is applied through the `Masked` / `IfElse` chaining described at the end of this section, and the compiler folds the chain into a single predicated instruction.
 
 #### Element-wise Arithmetic
 
@@ -604,20 +608,11 @@ func (x Int8s) Splice(y Int8s, m Mask8s) Int8s
 // ... analogous for other element widths
 ```
 
-#### Fluent Predication and Peephole Lowering
-Nearly all SVE arithmetic, logic, and memory instructions can be governed by a predicate. To avoid doubling the method surface (`AddMasked`, `SubMasked`, ...), masking is applied via a chained call. The names match `simd/archsimd`:
+## CPU Feature Check
 
-```go
-func (x Int8s) Masked(m Mask8s) Int8s              // (Zeroing Predication)
-func (x Int8s) IfElse(y Int8s, m Mask8s) Int8s     // (Merging Predication)
-```
+Two new CPU feature will be added: `cpu.ARM64.HasSVE` and `cpu.ARM64.HasSVE2`.
 
-`Masked` returns a vector whose lanes are `x[i]` where `m[i]` is active and `0` otherwise. `IfElse` returns `x[i]` where `m[i]` is active and `y[i]` otherwise.
-
-**Peephole Compiler Lowering.** When the Go compiler sees an unmasked operation followed immediately by `.Masked(m)` or `.Merge(y, m)`, it lowers the pair into a single predicated SVE instruction.
-
-* `xv.Add(yv).Masked(p)` lowers to `ADD Z0.B, P0/Z, Z0.B, Z1.B` (zeroing).
-* `xv.Add(yv).Merge(zv, p)` lowers to `ADD Z0.B, P0/M, Z0.B, Z1.B` (merging into `zv`).
+With more extensions we support, we can potentially include more features like SVE2 crypto extensions, etc.
 
 ## Example
 Below is an example test demonstrating a Vector Length Agnostic (VLA) loop that adds two slices of `int8`s together. SVE allows the loop stride to safely scale to the hardware's vector length while automatically masking the tail end of the slice.
@@ -629,11 +624,15 @@ func AddSlice(x, y []int8) []int8 {
 	commonLen := min(len(x), len(y))
 	res := make([]int8, commonLen)
 	for i := 0; i < commonLen; i += stride {
-		xv := archsimd.LoadInt8sSlicePart(x[i:])
-		yv := archsimd.LoadInt8sSlicePart(y[i:])
+		xv := archsimd.LoadInt8sPart(x[i:])
+		yv := archsimd.LoadInt8sPart(y[i:])
 		zv := xv.Add(yv)
-		zv.StoreSlicePart(res[i:])
+		zv.StorePart(res[i:])
 	}
 	return res
 }
 ```
+
+## Impact on Tooling
+
+We expect the impact on tooling to be minimal, these are all concrete types with a fixed size. They will flow through the compiler just like amd64 types.
