@@ -15,9 +15,9 @@ For names that are already specified in Midway, unless documented in comment, th
 
 ### Predication
 
-All SVE API entries come without predication, the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
+All SVE API entries come without predication; the user can use `.Masked(m)` and `.IfElse(m)` to ask for zero predication and merging predication.
 
-Many instructions take a predicate `P`, while a lot of them also come with an unpredicated form, some do not. For instructions that come with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that do not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrinsic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user calls `Masked` and `IfElse` right after.
+Many instructions take a predicate `P`; a lot of them also come with an unpredicated form, but some do not. For instructions that come with an unpredicated form, the intrinsic will map to that one; and when combined with `Masked` and `IfElse`, the compiler will try to peephole it to a predicated form if it exists. For instructions that do not come with an unpredicated form, an all-active predicate will be constructed in place by the compiler and provided to the predicated instruction, and the intrinsic maps to this two-instruction sequence. The compiler peepholes can strip away this all-true predicate when the user calls `Masked` and `IfElse` right after.
 
 ### `MOVPRFX`
 
@@ -248,13 +248,13 @@ func (m Mask8s) AsMask32s() Mask32s
 func (m Mask8s) AsMask64s() Mask64s
 // ... analogous for wider masks
 ```
-These conversions do not exist on amd64 or arm64. However this proposal still includes them because SVE predicates are universally applied on byte lane basis regardless of arrangement. Larger mask types use only the bits whose indices are a multiple of the byte size of the mask lane. So it's possible that the user may want to reinterpret the bits in a predicate to apply on different vector arrangements. Discussions are welcomed!
+These conversions do not exist on amd64 or arm64. However, this proposal still includes them because SVE predicates are universally applied on byte lane basis regardless of arrangement. Larger mask types use only the bits whose indices are a multiple of the byte size of the mask lane. So it's possible that the user may want to reinterpret the bits in a predicate to apply on different vector arrangements. Discussions are welcomed!
 
 #### Permutations
 
 ```go
-// Reverse reverses the order of elements in x.
-//	result[i] = x[x.Len() - 1 - i]
+// Reverse reverses the order of elements in m.
+//	result[i] = m[m.Len() - 1 - i]
 //
 // Asm: REV (predicate)
 func (m Mask8s) Reverse() Mask8s
@@ -266,13 +266,15 @@ func (x Mask8s) InterleaveLo(y Mask8s) Mask8s
 //	
 // Asm: ZIP2 (predicate)
 func (x Mask8s) InterleaveHi(y Mask8s) Mask8s
-// InterleaveEven interleaves the even-indexed lanes of x and y,
-// x taking the even-indexed lanes and y taking the odd-indexed lanes in the result.
+// InterleaveEven interleaves the even-indexed lanes of x and y:
+//	result[2i]   = x[2i]
+//	result[2i+1] = y[2i]
 //
 // Asm: TRN1 (predicate)
 func (x Mask8s) InterleaveEven(y Mask8s) Mask8s
-// InterleaveOdd interleaves the odd-indexed lanes of x and y,
-// x taking the even-indexed lanes and y taking the odd-indexed lanes in the result.
+// InterleaveOdd interleaves the odd-indexed lanes of x and y:
+//	result[2i]   = x[2i+1]
+//	result[2i+1] = y[2i+1]
 //
 // Asm: TRN2 (predicate)
 func (x Mask8s) InterleaveOdd(y Mask8s) Mask8s
@@ -298,7 +300,7 @@ func (x Float64s) IsNaN() Mask64s // Asm: FCMUO (vectors)
 ```
 
 ### Vector Operations
-All SVE vector operations are presented in their unconditional form. Predication is applied through the `Masked` / `IfElse` chaining described at the end of this section, and the compiler folds the chain into a single predicated instruction.
+SVE vector operations are presented in their unconditional form. For operations that lack an unpredicated SVE form, the compiler constructs an implicit all-true predicate at lowering (see the Predication section). Predication is applied through the `Masked` / `IfElse` chaining described at the end of this section, and the compiler folds the chain into a single predicated instruction.
 
 #### Element-wise Arithmetic
 
@@ -385,7 +387,7 @@ func (x Uint8s) ShiftRight(y Uint8s) Uint8s         // Asm: LSR (vectors)
 // ... analogous for 16/32/64-bit integer lanes
 ```
 
-Rotations are supported in RAX1 and XAR instructions as only **part** of their semantics, how should we support them?
+Rotations are supported in RAX1 and XAR instructions as only **part** of their semantics; how should we support them?
 
 #### Bit Manipulation (integer types)
 
@@ -492,7 +494,7 @@ Cross-width float conversions:
 // Asm: FCVT
 func (x Float32s) UnpackWidenEvenToFloat64s() Float64s
 // EvenNarrowToFloat32s performs the following operation:
-//	result[2i] = float32((x[i]))
+//	result[2i]   = float32(x[i])
 //	result[2i+1] = 0
 //
 // Asm: FCVT
@@ -555,8 +557,8 @@ Element Getters:
 // Asm: LASTB
 func (x Int8s) GetElemLastActive(m Mask8s) int8
 // GetElemAfterLastActive extracts the element right after the last active element in x governed by m.
-// If m is all false or the last active element in x is the last element in x,
-// the result will be x[0].
+// Letting j be the index of the last active element in m (or -1 if m is all false),
+// the result is x[(j + 1) mod x.Len()].
 //
 // Asm: LASTA
 func (x Int8s) GetElemAfterLastActive(m Mask8s) int8
@@ -567,7 +569,7 @@ func (x Int8s) GetElemAfterLastActive(m Mask8s) int8
 
 Element Setters:
 ```go
-// SetElem sets the element at index%32 to v.
+// SetElem sets the element at index % x.Len() to v.
 //
 // Asm: Emulated (Predicate construction + "CPY (scalar)")
 func (x Int8s) SetElem(index uint8, v int8) Int8s
@@ -584,13 +586,15 @@ func (x Int8s) SetElem(index uint8, v int8) Int8s
 func (x Int8s) Reverse() Int8s
 func (x Int8s) InterleaveLo(y Int8s) Int8s // Asm: ZIP1 (vectors)
 func (x Int8s) InterleaveHi(y Int8s) Int8s // Asm: ZIP2 (vectors)
-// InterleaveEven interleaves the even-indexed lanes of x and y,
-// x taking the even-indexed lanes and y taking the odd-indexed lanes in the result.
+// InterleaveEven interleaves the even-indexed lanes of x and y:
+//	result[2i]   = x[2i]
+//	result[2i+1] = y[2i]
 //
 // Asm: TRN1 (vectors)
 func (x Int8s) InterleaveEven(y Int8s) Int8s
-// InterleaveOdd interleaves the odd-indexed lanes of x and y,
-// x taking the even-indexed lanes and y taking the odd-indexed lanes in the result.
+// InterleaveOdd interleaves the odd-indexed lanes of x and y:
+//	result[2i]   = x[2i+1]
+//	result[2i+1] = y[2i+1]
 //
 // Asm: TRN2 (vectors)
 func (x Int8s) InterleaveOdd(y Int8s) Int8s
@@ -614,7 +618,7 @@ Two new CPU features will be added: `cpu.ARM64.HasSVE` and `cpu.ARM64.HasSVE2`.
 With more extensions we support, we can potentially include more features like SVE2 crypto extensions, etc.
 
 ## Example
-Below is an example test demonstrating a Vector Length Agnostic (VLA) loop that adds two slices of `int8`s together. SVE allows the loop stride to safely scale to the hardware's vector length while automatically masking the tail end of the slice.
+Below are two examples. The first is a Vector Length Agnostic (VLA) loop that adds two slices of `int8`s together. SVE allows the loop stride to safely scale to the hardware's vector length while automatically masking the tail end of the slice.
 
 ```go
 func AddSlice(x, y []int8) []int8 {
@@ -632,7 +636,7 @@ func AddSlice(x, y []int8) []int8 {
 }
 ```
 
-A slightly richer example: a row-major `float32` matrix multiply `C = A * B`, where `A` is `M×K`, `B` is `K×N`, and `C` is `M×N`. The j-loop walks along a row of `C` in scalable chunks — the stride is the hardware vector length, and `LoadFloat32sPart` / `StorePart` mask the tail of each row automatically, so the code is correct for every `N` without a separate scalar epilogue. The accumulator stays in a `Float32s` register across the entire k-loop, and `MulAdd` lowers to a single fused multiply-add per iteration. The comment shows the first committed k-loop as an example.
+The second example is a row-major `float32` matrix multiply `C = A * B`, where `A` is `M×K`, `B` is `K×N`, and `C` is `M×N`. The j-loop walks along a row of `C` in scalable chunks — the stride is the hardware vector length, and `LoadFloat32sPart` / `StorePart` mask the tail of each row automatically, so the code is correct for every `N` without a separate scalar epilogue. The accumulator stays in a `Float32s` register across the entire k-loop, and `MulAdd` lowers to a single fused multiply-add per iteration. The comments below trace the inner k-loop for `i = 0, j = 0` at a vector length of 4 float32 lanes.
 
 ```go
 func MatMul(a, b, c []float32, M, K, N int) {
@@ -640,30 +644,30 @@ func MatMul(a, b, c []float32, M, K, N int) {
 	var probe archsimd.Float32s
 	stride := probe.Len()
 
-	// a = b =	[1, 2, 3, 4,
-	//     		[5, 6, 7, 9
-	//			10, 11, 12, 13,
-	//			14, 15, 16, 17]
+	// Suppose a = b = [[ 1,  2,  3,  4],
+	//                  [ 5,  6,  7,  8],
+	//                  [ 9, 10, 11, 12],
+	//                  [13, 14, 15, 16]]
 
 	for i := 0; i < M; i++ {
-		// Vectorize on the result rol.
+		// Vectorize across the columns of the result row.
 		for j := 0; j < N; j += stride {
 			var acc archsimd.Float32s // zero
 			for k := 0; k < K; k++ {
-				// a00 = [1, 1, 1, 1]
-				// a01 = [2, 2, 2, 2]
-				// a02 = [3, 3, 3, 3]
-				// a03 = [4, 4, 4, 4]
+				// k = 0: aik = [1, 1, 1, 1]
+				// k = 1: aik = [2, 2, 2, 2]
+				// k = 2: aik = [3, 3, 3, 3]
+				// k = 3: aik = [4, 4, 4, 4]
 				aik := archsimd.BroadcastFloat32s(a[i*K+k])
-				// b00 = [1, 2, 3, 4]
-				// b10 = [5, 6, 7, 8]
-				// b20 = [10, 11, 12, 13]
-				// b30 = [14, 15, 16, 17]
+				// k = 0: bkj = [ 1,  2,  3,  4]
+				// k = 1: bkj = [ 5,  6,  7,  8]
+				// k = 2: bkj = [ 9, 10, 11, 12]
+				// k = 3: bkj = [13, 14, 15, 16]
 				bkj := archsimd.LoadFloat32sPart(b[k*N+j : k*N+N])
-				// acc(0) += 1*[1, 2, 3, 4]
-				// acc(1) += 2*[5, 6, 7, 8]
-				// acc(2) += 3*[10, 11, 12, 13]
-				// acc(3) += 4*[14, 15, 16, 17]
+				// k = 0: acc += 1 * [ 1,  2,  3,  4]
+				// k = 1: acc += 2 * [ 5,  6,  7,  8]
+				// k = 2: acc += 3 * [ 9, 10, 11, 12]
+				// k = 3: acc += 4 * [13, 14, 15, 16]
 				acc = aik.MulAdd(bkj, acc) // acc += aik * bkj
 			}
 			acc.StorePart(c[i*N+j : i*N+N])
