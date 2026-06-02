@@ -632,6 +632,46 @@ func AddSlice(x, y []int8) []int8 {
 }
 ```
 
+A slightly richer example: a row-major `float32` matrix multiply `C = A * B`, where `A` is `M×K`, `B` is `K×N`, and `C` is `M×N`. The j-loop walks along a row of `C` in scalable chunks — the stride is the hardware vector length, and `LoadFloat32sPart` / `StorePart` mask the tail of each row automatically, so the code is correct for every `N` without a separate scalar epilogue. The accumulator stays in a `Float32s` register across the entire k-loop, and `MulAdd` lowers to a single fused multiply-add per iteration. The comment shows the first committed k-loop as an example.
+
+```go
+func MatMul(a, b, c []float32, M, K, N int) {
+	// The stride scales with the hardware's vector length for float32 lanes.
+	var probe archsimd.Float32s
+	stride := probe.Len()
+
+	// a = b =	[1, 2, 3, 4,
+	//     		[5, 6, 7, 9
+	//			10, 11, 12, 13,
+	//			14, 15, 16, 17]
+
+	for i := 0; i < M; i++ {
+		// Vectorize on the result rol.
+		for j := 0; j < N; j += stride {
+			var acc archsimd.Float32s // zero
+			for k := 0; k < K; k++ {
+				// a00 = [1, 1, 1, 1]
+				// a01 = [2, 2, 2, 2]
+				// a02 = [3, 3, 3, 3]
+				// a03 = [4, 4, 4, 4]
+				aik := archsimd.BroadcastFloat32s(a[i*K+k])
+				// b00 = [1, 2, 3, 4]
+				// b10 = [5, 6, 7, 8]
+				// b20 = [10, 11, 12, 13]
+				// b30 = [14, 15, 16, 17]
+				bkj := archsimd.LoadFloat32sPart(b[k*N+j : k*N+N])
+				// acc(0) += 1*[1, 2, 3, 4]
+				// acc(1) += 2*[5, 6, 7, 8]
+				// acc(2) += 3*[10, 11, 12, 13]
+				// acc(3) += 4*[14, 15, 16, 17]
+				acc = aik.MulAdd(bkj, acc) // acc += aik * bkj
+			}
+			acc.StorePart(c[i*N+j : i*N+N])
+		}
+	}
+}
+```
+
 ## Impact on Tooling
 
 We expect the impact on tooling to be minimal, these are all concrete types with a fixed size. They will flow through the compiler just like amd64 types.
